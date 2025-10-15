@@ -27,6 +27,7 @@ jwt = JWTManager(app)
 client = MongoClient(MONGO_URI)
 db = client.get_default_database() if client else None
 users = db.users
+medications = db.medications
 
 
 def find_user_by_email(email: str):
@@ -189,6 +190,137 @@ def api_user():
 	user.pop("_id", None)  # Remove MongoDB _id
 	
 	return jsonify({"success": True, "user": user})
+
+
+@app.route("/api/medications", methods=["POST"])
+@jwt_required()
+def api_create_medication():
+	"""Create a new medication for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	
+	data = request.get_json() or {}
+	
+	# Validate required fields
+	required_fields = ["name", "frequency_per_day", "times", "duration_days", "start_date", "status"]
+	for field in required_fields:
+		if field not in data:
+			return jsonify({"success": False, "message": f"Missing required field: {field}"}), 400
+	
+	# Create medication document
+	medication_doc = {
+		"user_id": str(user["_id"]),
+		"name": data.get("name"),
+		"brand_name": data.get("brand_name"),
+		"form": data.get("form"),
+		"strength": data.get("strength"),
+		"dosage": data.get("dosage"),
+		"frequency_per_day": data.get("frequency_per_day"),
+		"times": data.get("times"),  # Array of time strings
+		"duration_days": data.get("duration_days"),
+		"start_date": data.get("start_date"),
+		"end_date": data.get("end_date"),
+		"instructions": data.get("instructions"),
+		"source": data.get("source", "manual_add"),
+		"status": data.get("status", "active"),
+		"created_at": data.get("created_at"),
+		"updated_at": data.get("updated_at"),
+	}
+	
+	result = medications.insert_one(medication_doc)
+	medication_doc["_id"] = str(result.inserted_id)
+	
+	return jsonify({"success": True, "medication": medication_doc}), 201
+
+
+@app.route("/api/medications", methods=["GET"])
+@jwt_required()
+def api_get_medications():
+	"""Get all medications for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	
+	# Find all medications for this user
+	user_medications = list(medications.find({"user_id": str(user["_id"])}))
+	
+	# Convert ObjectId to string for JSON serialization
+	for med in user_medications:
+		med["_id"] = str(med["_id"])
+	
+	return jsonify({"success": True, "medications": user_medications})
+
+
+@app.route("/api/medications/<medication_id>", methods=["PUT"])
+@jwt_required()
+def api_update_medication(medication_id):
+	"""Update a medication"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	
+	data = request.get_json() or {}
+	
+	# Find the medication and verify ownership
+	from bson import ObjectId
+	try:
+		med = medications.find_one({"_id": ObjectId(medication_id), "user_id": str(user["_id"])})
+	except:
+		return jsonify({"success": False, "message": "Invalid medication ID"}), 400
+	
+	if not med:
+		return jsonify({"success": False, "message": "Medication not found or unauthorized"}), 404
+	
+	# Update fields
+	update_data = {}
+	updatable_fields = [
+		"name", "brand_name", "form", "strength", "dosage", 
+		"frequency_per_day", "times", "duration_days", "start_date", 
+		"end_date", "instructions", "status", "updated_at"
+	]
+	
+	for field in updatable_fields:
+		if field in data:
+			update_data[field] = data[field]
+	
+	if update_data:
+		medications.update_one({"_id": ObjectId(medication_id)}, {"$set": update_data})
+	
+	# Get updated medication
+	updated_med = medications.find_one({"_id": ObjectId(medication_id)})
+	updated_med["_id"] = str(updated_med["_id"])
+	
+	return jsonify({"success": True, "medication": updated_med})
+
+
+@app.route("/api/medications/<medication_id>", methods=["DELETE"])
+@jwt_required()
+def api_delete_medication(medication_id):
+	"""Delete a medication"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	
+	# Find and delete the medication, verifying ownership
+	from bson import ObjectId
+	try:
+		result = medications.delete_one({"_id": ObjectId(medication_id), "user_id": str(user["_id"])})
+	except:
+		return jsonify({"success": False, "message": "Invalid medication ID"}), 400
+	
+	if result.deleted_count == 0:
+		return jsonify({"success": False, "message": "Medication not found or unauthorized"}), 404
+	
+	return jsonify({"success": True, "message": "Medication deleted"})
 
 
 if __name__ == "__main__":
