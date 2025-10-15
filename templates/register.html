@@ -1,0 +1,170 @@
+{% extends 'base.html' %}
+
+{% block title %}Register — Healix{% endblock %}
+
+{% block content %}
+<style>
+  
+  .row { display:flex; gap:12px; flex-wrap:wrap }
+  label { display:block; margin-bottom:6px; font-weight:600 }
+  input, select, textarea { width:100%; padding:8px; border:1px solid #ddd; border-radius:8px }
+  .field { flex:1 1 250px; min-width:180px }
+  .actions { margin-top:12px }
+  button { padding:10px 16px; background:#0a7ea4;color:#fff;border:none;border-radius:8px }
+  .note { color:#666; font-size:0.9rem }
+</style>
+  <div class="card form-card mx-auto" style="max-width:920px">
+    <h1>Register</h1>
+    <p class="note">We'll ask a few health details to personalize your experience.</p>
+
+    <form id="registerForm">
+      <div style="margin-bottom:12px">
+        <label>Full name</label>
+        <input type="text" id="full_name" name="full_name" placeholder="Your full name" />
+      </div>
+      <div style="margin-bottom:12px">
+        <label>Email</label>
+        <input type="email" name="email" required />
+      </div>
+      <div style="margin-bottom:12px">
+        <label>Password</label>
+        <input type="password" name="password" required />
+      </div>
+
+      <h3>Basics</h3>
+      <div class="row">
+        <div class="field">
+          <label>Date of birth</label>
+          <input type="date" id="dob" />
+        </div>
+        <div class="field">
+          <label>Gender</label>
+          <select id="gender">
+            <option value="">Select</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Blood group</label>
+          <select id="blood_group">
+            <option value="">Select</option>
+            <option>A+</option><option>A-</option><option>B+</option><option>B-</option>
+            <option>AB+</option><option>AB-</option><option>O+</option><option>O-</option>
+          </select>
+        </div>
+      </div>
+
+      <h3>Body metrics</h3>
+      <div class="row">
+        <div class="field">
+          <label>Height (cm)</label>
+          <input id="height_cm" type="number" placeholder="e.g., 175" />
+        </div>
+        <div class="field">
+          <label>Weight (kg)</label>
+          <input id="weight_kg" type="number" placeholder="e.g., 70" />
+        </div>
+      </div>
+
+      <h3>History & allergies</h3>
+      <div style="margin-bottom:8px">
+        <label>Known conditions</label>
+        <textarea id="known_conditions" rows="2" placeholder="e.g., Hypertension"></textarea>
+      </div>
+      <div style="margin-bottom:8px">
+        <label>Allergies</label>
+        <textarea id="allergies" rows="2" placeholder="e.g., Penicillin"></textarea>
+      </div>
+      <div style="margin-bottom:8px">
+        <label>Food tolerance</label>
+        <textarea id="food_tolerance" rows="2" placeholder="e.g., Lactose intolerant"></textarea>
+      </div>
+
+      <h3>Lifestyle</h3>
+      <div class="row">
+        <div class="field">
+          <label>Smoking</label>
+          <select id="smoking">
+            <option value="">Select</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Alcohol</label>
+          <select id="alcohol">
+            <option value="">Select</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Physical activity</label>
+          <select id="physical_activity">
+            <option value="">Select</option>
+            <option value="low">Low</option>
+            <option value="moderate">Moderate</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Diet type</label>
+          <select id="diet_type">
+            <option value="">Select</option>
+            <option value="veg">Vegetarian</option>
+            <option value="nonveg">Non-vegetarian</option>
+            <option value="vegan">Vegan</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit">Register</button>
+      </div>
+
+    </form>
+
+    <p id="msg"></p>
+    <p><a href="/login">Already have an account? Sign in</a></p>
+  </div>
+{% endblock %}
+
+    <script>
+      // dob uses a native date input (YYYY-MM-DD)
+      const dobEl = document.getElementById('dob');
+
+      const form = document.getElementById('registerForm');
+      const msg = document.getElementById('msg');
+      form.addEventListener('submit', async (e)=>{
+        e.preventDefault();
+        const data = {
+    full_name: document.getElementById('full_name').value,
+    email: form.email.value,
+          password: form.password.value,
+          dob: dobEl.value,
+          gender: document.getElementById('gender').value,
+          blood_group: document.getElementById('blood_group').value,
+          height_cm: document.getElementById('height_cm').value,
+          weight_kg: document.getElementById('weight_kg').value,
+          known_conditions: document.getElementById('known_conditions').value,
+          allergies: document.getElementById('allergies').value,
+          food_tolerance: document.getElementById('food_tolerance').value,
+          smoking: document.getElementById('smoking').value,
+          alcohol: document.getElementById('alcohol').value,
+          physical_activity: document.getElementById('physical_activity').value,
+          diet_type: document.getElementById('diet_type').value,
+        };
+        const res = await fetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+        const j = await res.json();
+        if(res.ok){
+          msg.textContent = 'Registered. Redirecting to login...';
+          setTimeout(()=>location.href='/login',1000);
+        } else {
+          msg.textContent = j.message || 'Registration failed';
+        }
+      });
+    </script>
+  </body>
+</html>

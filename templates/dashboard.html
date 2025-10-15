@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard — Healix{% endblock %}
+
+{% block content %}
+  <div class="card form-card mx-auto" style="max-width:720px">
+    <h1>Dashboard</h1>
+    <p class="lead">Welcome, {{ user.full_name or user.email }}</p>
+    <div>
+      <button id="logout" class="btn btn-outline-secondary">Log out</button>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      location.href = '/';
+    });
+  </script>
+{% endblock %}
