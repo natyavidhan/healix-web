@@ -28,6 +28,7 @@ client = MongoClient(MONGO_URI)
 db = client.get_default_database() if client else None
 users = db.users
 medications = db.medications
+prescriptions = db.prescriptions
 
 
 def find_user_by_email(email: str):
@@ -322,6 +323,64 @@ def api_delete_medication(medication_id):
 	
 	return jsonify({"success": True, "message": "Medication deleted"})
 
+
+# ---------------------- PRESCRIPTIONS API ----------------------
+@app.route("/api/prescriptions", methods=["POST"])
+@jwt_required()
+def api_create_prescription():
+	"""Create a new prescription with a list of medications for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	data = request.get_json() or {}
+	doctor = (data.get("doctor") or "").strip()
+	date = (data.get("date") or "").strip()
+	medications_payload = data.get("medications") or []
+
+	if not doctor or not date:
+		return jsonify({"success": False, "message": "Doctor and date are required"}), 400
+	if not isinstance(medications_payload, list) or len(medications_payload) == 0:
+		return jsonify({"success": False, "message": "Medications list is required"}), 400
+
+	# Basic validation for medications structure (required subset)
+	for idx, med in enumerate(medications_payload):
+		missing = [k for k in ["name", "frequency_per_day", "times", "duration_days", "start_date", "status"] if k not in med]
+		if missing:
+			return jsonify({"success": False, "message": f"Medication #{idx+1} missing fields: {', '.join(missing)}"}), 400
+
+	prescription_doc = {
+		"user_id": str(user["_id"]),
+		"doctor": doctor,
+		"date": date,
+		"medications": medications_payload,
+		"created_at": data.get("created_at") or None,
+		"updated_at": data.get("updated_at") or None,
+	}
+
+	result = prescriptions.insert_one(prescription_doc)
+	prescription_doc["_id"] = str(result.inserted_id)
+
+	return jsonify({"success": True, "prescription": prescription_doc}), 201
+
+
+@app.route("/api/prescriptions", methods=["GET"])
+@jwt_required()
+def api_get_prescriptions():
+	"""Get all prescriptions for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	user_prescriptions = list(prescriptions.find({"user_id": str(user["_id"])}))
+	for p in user_prescriptions:
+		p["_id"] = str(p["_id"])
+
+	return jsonify({"success": True, "prescriptions": user_prescriptions})
 
 if __name__ == "__main__":
 	# For development only. In production use a WSGI server.
