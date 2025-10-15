@@ -1,14 +1,27 @@
 import os
+from datetime import timedelta
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity
+from flask_cors import CORS
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # Configuration
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/healix")
 SECRET_KEY = os.environ.get("SECRET_KEY", "secret")
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "jwt-secret-change-me")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
+app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=30)
+
+# Enable CORS for React Native app
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# Initialize JWT
+jwt = JWTManager(app)
 
 # Initialize MongoDB client
 client = MongoClient(MONGO_URI)
@@ -101,7 +114,17 @@ def api_register():
 		"diet_type": diet_type,
 	}
 	users.insert_one(user_doc)
-	return jsonify({"success": True, "message": "User registered"})
+	
+	# Create JWT tokens
+	access_token = create_access_token(identity=email)
+	refresh_token = create_refresh_token(identity=email)
+	
+	return jsonify({
+		"success": True,
+		"message": "User registered",
+		"access_token": access_token,
+		"refresh_token": refresh_token
+	})
 
 
 @app.route("/api/login", methods=["POST"])
@@ -115,21 +138,57 @@ def api_login():
 
 	user = find_user_by_email(email)
 	if not user:
-		return jsonify({"success": False, "authenticated": False})
+		return jsonify({"success": False, "authenticated": False, "message": "Invalid credentials"})
 
 	stored = user.get("password")
 	if not stored or not check_password_hash(stored, password):
-		return jsonify({"success": True, "authenticated": False})
+		return jsonify({"success": False, "authenticated": False, "message": "Invalid credentials"})
 
-	# Authentication successful
-	session["user"] = {"email": user.get("email")}
-	return jsonify({"success": True, "authenticated": True})
+	# Authentication successful - create JWT tokens
+	access_token = create_access_token(identity=email)
+	refresh_token = create_refresh_token(identity=email)
+	
+	# Also set session for web UI compatibility
+	session["user"] = {"email": user.get("email"), "full_name": user.get("full_name")}
+	
+	return jsonify({
+		"success": True,
+		"authenticated": True,
+		"access_token": access_token,
+		"refresh_token": refresh_token
+	})
 
 
 @app.route("/api/logout", methods=["POST"])
 def api_logout():
 	session.pop("user", None)
 	return jsonify({"success": True})
+
+
+@app.route("/api/refresh", methods=["POST"])
+@jwt_required(refresh=True)
+def api_refresh():
+	"""Refresh access token using refresh token"""
+	identity = get_jwt_identity()
+	access_token = create_access_token(identity=identity)
+	return jsonify({"success": True, "access_token": access_token})
+
+
+@app.route("/api/user", methods=["GET"])
+@jwt_required()
+def api_user():
+	"""Get current user profile - requires JWT token"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	
+	# Remove password from response
+	user.pop("password", None)
+	user.pop("_id", None)  # Remove MongoDB _id
+	
+	return jsonify({"success": True, "user": user})
 
 
 if __name__ == "__main__":

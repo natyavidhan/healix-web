@@ -131,40 +131,40 @@
   </div>
 {% endblock %}
 
-    <script>
-      // dob uses a native date input (YYYY-MM-DD)
-      const dobEl = document.getElementById('dob');
+{% block scripts %}
+  <script>
+    // dob uses a native date input (YYYY-MM-DD)
+    const dobEl = document.getElementById('dob');
 
-      const form = document.getElementById('registerForm');
-      const msg = document.getElementById('msg');
-      form.addEventListener('submit', async (e)=>{
-        e.preventDefault();
-        const data = {
-    full_name: document.getElementById('full_name').value,
-    email: form.email.value,
-          password: form.password.value,
-          dob: dobEl.value,
-          gender: document.getElementById('gender').value,
-          blood_group: document.getElementById('blood_group').value,
-          height_cm: document.getElementById('height_cm').value,
-          weight_kg: document.getElementById('weight_kg').value,
-          known_conditions: document.getElementById('known_conditions').value,
-          allergies: document.getElementById('allergies').value,
-          food_tolerance: document.getElementById('food_tolerance').value,
-          smoking: document.getElementById('smoking').value,
-          alcohol: document.getElementById('alcohol').value,
-          physical_activity: document.getElementById('physical_activity').value,
-          diet_type: document.getElementById('diet_type').value,
-        };
-        const res = await fetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
-        const j = await res.json();
-        if(res.ok){
-          msg.textContent = 'Registered. Redirecting to login...';
-          setTimeout(()=>location.href='/login',1000);
-        } else {
-          msg.textContent = j.message || 'Registration failed';
-        }
-      });
-    </script>
-  </body>
-</html>
+    const form = document.getElementById('registerForm');
+    const msg = document.getElementById('msg');
+    form.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const data = {
+        full_name: document.getElementById('full_name').value,
+        email: form.email.value,
+        password: form.password.value,
+        dob: dobEl.value,
+        gender: document.getElementById('gender').value,
+        blood_group: document.getElementById('blood_group').value,
+        height_cm: document.getElementById('height_cm').value,
+        weight_kg: document.getElementById('weight_kg').value,
+        known_conditions: document.getElementById('known_conditions').value,
+        allergies: document.getElementById('allergies').value,
+        food_tolerance: document.getElementById('food_tolerance').value,
+        smoking: document.getElementById('smoking').value,
+        alcohol: document.getElementById('alcohol').value,
+        physical_activity: document.getElementById('physical_activity').value,
+        diet_type: document.getElementById('diet_type').value,
+      };
+      const res = await fetch('/api/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+      const j = await res.json();
+      if(res.ok){
+        msg.textContent = 'Registered. Redirecting to login...';
+        setTimeout(()=>location.href='/login',1000);
+      } else {
+        msg.textContent = j.message || 'Registration failed';
+      }
+    });
+  </script>
+{% endblock %}
