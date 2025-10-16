@@ -8,7 +8,13 @@ from flask_cors import CORS
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from ocr import extract_text_from_file, normalize_ocr_with_groq, prescription_extraction
+from ocr import (
+	extract_text_from_file,
+	normalize_ocr_with_groq,
+	prescription_extraction,
+	normalize_report,
+	report_extraction,
+)
 # Configuration
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/healix")
 SECRET_KEY = os.environ.get("SECRET_KEY", "secret")
@@ -32,6 +38,7 @@ db = client.get_default_database() if client else None
 users = db.users
 medications = db.medications
 prescriptions = db.prescriptions
+reports = db.reports
 
 
 def find_user_by_email(email: str):
@@ -386,6 +393,27 @@ def api_get_prescriptions():
 	return jsonify({"success": True, "prescriptions": user_prescriptions})
 
 
+@app.route("/api/prescriptions/<prescription_id>", methods=["DELETE"])
+@jwt_required()
+def api_delete_prescription(prescription_id):
+	"""Delete a prescription for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	from bson import ObjectId
+	try:
+		result = prescriptions.delete_one({"_id": ObjectId(prescription_id), "user_id": str(user["_id"])})
+	except Exception:
+		return jsonify({"success": False, "message": "Invalid prescription ID"}), 400
+
+	if result.deleted_count == 0:
+		return jsonify({"success": False, "message": "Prescription not found or unauthorized"}), 404
+
+	return jsonify({"success": True, "message": "Prescription deleted"})
+
+
 # ---------------------- OCR UPLOAD/EXTRACTION API ----------------------
 @app.route("/api/prescriptions/ocr", methods=["POST"])
 @jwt_required()
@@ -444,6 +472,152 @@ def api_extract_prescription_from_file():
 		return jsonify({"success": False, "message": f"Extraction failed: {str(e)}"}), 500
 
 	return jsonify({"success": True, "extracted": extracted}), 200
+
+
+# ---------------------- REPORTS OCR UPLOAD/EXTRACTION API ----------------------
+@app.route("/api/reports/ocr", methods=["POST"])
+@jwt_required()
+def api_extract_report_from_file():
+	"""
+	Upload a lab report file (PDF/Image), extract text via OCR, normalize it, and
+	return structured report data: { date, tests: [...] }.
+
+	Request:
+		Content-Type: multipart/form-data
+		Form field: file -> the uploaded file
+
+	Response (200):
+		{
+		  "success": true,
+		  "report": { "date": str|None, "tests": [...] }
+		}
+	"""
+	# Validate authentication/user exists
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	# Validate file in request
+	if "file" not in request.files:
+		return jsonify({"success": False, "message": "No file part in request"}), 400
+
+	file = request.files["file"]
+	if not file or file.filename == "":
+		return jsonify({"success": False, "message": "No file selected"}), 400
+
+	try:
+		# Step 1: OCR extraction from the uploaded file
+		raw_ocr = extract_text_from_file(file, ocr_api_key=os.environ.get("OCR_KEY", "helloworld"))
+	except Exception as e:
+		return jsonify({"success": False, "message": f"OCR extraction failed: {str(e)}"}), 500
+
+	# Step 2: Normalize OCR using Groq (best-effort) for report format
+	try:
+		normalized = normalize_report(raw_ocr)
+	except Exception:
+		normalized = raw_ocr
+
+	# Step 3: Extract structured report data
+	try:
+		structured = report_extraction(normalized)
+	except Exception as e:
+		return jsonify({"success": False, "message": f"Report extraction failed: {str(e)}"}), 500
+
+	return jsonify({"success": True, "report": structured}), 200
+
+
+# ---------------------- REPORTS DELETE API ----------------------
+@app.route("/api/reports/<report_id>", methods=["DELETE"])
+@jwt_required()
+def api_delete_report(report_id):
+	"""Delete a report for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	from bson import ObjectId
+	try:
+		result = reports.delete_one({"_id": ObjectId(report_id), "user_id": str(user["_id"])})
+	except Exception:
+		return jsonify({"success": False, "message": "Invalid report ID"}), 400
+
+	if result.deleted_count == 0:
+		return jsonify({"success": False, "message": "Report not found or unauthorized"}), 404
+
+	return jsonify({"success": True, "message": "Report deleted"})
+
+
+# ---------------------- REPORTS CREATE/LIST API ----------------------
+@app.route("/api/reports", methods=["POST"])
+@jwt_required()
+def api_create_report():
+	"""Create a new report for the authenticated user
+
+	Expected JSON body:
+	{
+	  "name": string,            # required
+	  "date": string,            # required (YYYY-MM-DD or ISO)
+	  "summary": string,         # required (e.g., "Tests: 5")
+	  "tests": [                 # optional: array of test rows
+		{ "name": str, "result": str, "units": str?, "reference": str? }
+	  ],
+	  "file_uri": string?,       # optional (client local URI)
+	  "mime_type": string?,
+	  "size_bytes": number?
+	}
+	"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	data = request.get_json() or {}
+	name = (data.get("name") or "").strip()
+	date = (data.get("date") or "").strip()
+	summary = (data.get("summary") or "").strip()
+	tests = data.get("tests") or []
+
+	if not name or not date or not summary:
+		return jsonify({"success": False, "message": "Name, date and summary are required"}), 400
+
+	# Basic shape validation for tests if provided
+	if tests and not isinstance(tests, list):
+		return jsonify({"success": False, "message": "tests must be an array"}), 400
+
+	report_doc = {
+		"user_id": str(user["_id"]),
+		"name": name,
+		"date": date,
+		"summary": summary,
+		"tests": tests,
+		"file_uri": data.get("file_uri"),
+		"mime_type": data.get("mime_type"),
+		"size_bytes": data.get("size_bytes"),
+		"created_at": data.get("created_at") or None,
+		"updated_at": data.get("updated_at") or None,
+	}
+
+	result = reports.insert_one(report_doc)
+	report_doc["_id"] = str(result.inserted_id)
+	return jsonify({"success": True, "report": report_doc}), 201
+
+
+@app.route("/api/reports", methods=["GET"])
+@jwt_required()
+def api_get_reports():
+	"""Get all reports for the authenticated user"""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	user_reports = list(reports.find({"user_id": str(user["_id"]) }))
+	for r in user_reports:
+		r["_id"] = str(r["_id"])
+
+	return jsonify({"success": True, "reports": user_reports}), 200
 
 if __name__ == "__main__":
 	# For development only. In production use a WSGI server.

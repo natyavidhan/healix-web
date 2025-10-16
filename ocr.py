@@ -12,6 +12,11 @@ import subprocess
 import tempfile
 from dotenv import load_dotenv
 from groq import Groq
+from typing import List
+
+# New: Local OCR via docTR
+from doctr.io import DocumentFile
+from doctr.models import ocr_predictor
 
 load_dotenv()
 
@@ -19,70 +24,83 @@ load_dotenv()
 # SECTION 1: OCR Extraction from File
 # =====================================================================
 
+DOCTR_MODEL = None
+
+
+def _get_doctr_model():
+    global DOCTR_MODEL
+    if DOCTR_MODEL is None:
+        # Load once to avoid heavy reloads on each request
+        DOCTR_MODEL = ocr_predictor(pretrained=True)
+    return DOCTR_MODEL
+
+
+def _doctr_result_to_text(result) -> str:
+    """Flatten docTR result into plain text, line by line."""
+    lines: List[str] = []
+    try:
+        for page in result.pages:
+            for block in page.blocks:
+                for line in block.lines:
+                    words = [w.value for w in line.words]
+                    if words:
+                        lines.append(" ".join(words))
+    except Exception as e:
+        # Fallback to exported dict if object API changes
+        try:
+            exported = result.export()
+            for page in exported.get("pages", []):
+                for block in page.get("blocks", []):
+                    for line in block.get("lines", []):
+                        words = [w.get("value", "") for w in line.get("words", []) if w.get("value")]
+                        if words:
+                            lines.append(" ".join(words))
+        except Exception:
+            # As a last resort, just string the result
+            lines.append(str(result))
+    return "\n".join(lines)
+
+
 def extract_text_from_file(file, ocr_api_key="helloworld"):
     """
-    Extracts text from an uploaded file using OCR.space API.
-    File is temporarily uploaded to tmpfiles.org.
-    
+    Extract text from an uploaded file using docTR (local OCR).
+
     Args:
-        file: Flask file object
-        ocr_api_key: OCR.space API key
-        
+        file: Flask file object (image or PDF)
+        ocr_api_key: Unused (kept for backward compatibility)
+
     Returns:
         str: Extracted raw text from file
     """
-    # Save file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix='_' + file.filename) as tmp:
+    # Save upload to a temporary path
+    suffix = '_' + (file.filename or 'upload')
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         file.save(tmp)
         tmp_path = tmp.name
 
-    # Upload to tmpfiles.org using curl
-    curl_cmd = ['curl', '-s', '-F', f'file=@{tmp_path}', 'https://tmpfiles.org/api/v1/upload']
-    result = subprocess.run(curl_cmd, capture_output=True, text=True)
-    
     try:
-        tmpfiles_result = json.loads(result.stdout)
-    except Exception as e:
-        print('curl output:', result.stdout)
-        raise Exception('Could not parse tmpfiles.org response')
-    
-    if tmpfiles_result.get('status') != 'success':
-        print('tmpfiles.org response:', tmpfiles_result)
-        raise Exception('File upload failed: ' + str(tmpfiles_result.get('message', 'Unknown error')))
-    
-    # Convert to raw download URL format
-    file_url = tmpfiles_result['data']['url']
-    match = re.match(r'http://tmpfiles\.org/(\d+)/([\w\-\.]+)', file_url)
-    if match:
-        file_url = f'https://tmpfiles.org/dl/{match.group(1)}/{match.group(2)}'
+        ext = os.path.splitext(tmp_path)[1].lower()
+        if ext == '.pdf':
+            doc = DocumentFile.from_pdf(tmp_path)
+        else:
+            # Accept single image path; docTR will handle decoding
+            doc = DocumentFile.from_images(tmp_path)
 
-    # Clean up temp file
-    os.remove(tmp_path)
-
-    # Detect file extension for OCR.space
-    ext = os.path.splitext(file.filename)[1].lower().replace('.', '')
-    filetype_param = f"&filetype={ext}" if ext else ""
-
-    print("File URL:", file_url)
-
-    # Call OCR.space API
-    ocr_url = f"https://api.ocr.space/parse/imageurl?apikey={ocr_api_key}&url={file_url}{filetype_param}"
-    ocr_response = requests.get(ocr_url)
-    ocr_result = ocr_response.json()
-
-    print("OCR API response:", ocr_result)
-
-    # Extract text
-    parsed_text = ""
-    if ocr_result.get("ParsedResults"):
-        parsed_text = ocr_result["ParsedResults"][0].get("ParsedText", "")
-    return parsed_text
+        model = _get_doctr_model()
+        result = model(doc)
+        text = _doctr_result_to_text(result)
+        return text
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
 # =====================================================================
 # SECTION 2: OCR Normalization via Groq AI
 # =====================================================================
 
-def normalize_ocr_with_groq(ocr_text):
+def normalize_prescription(ocr_text):
     """
     Normalizes noisy OCR output using Groq LLaMA model.
     Extracts doctor name, prescription date, and medicines.
@@ -110,6 +128,53 @@ def normalize_ocr_with_groq(ocr_text):
         "...\n\n"
         "NO EXTRA TEXT, NOTES, OR EXPLANATIONS."
     )
+    
+    chat_completion = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model="llama-3.3-70b-versatile",
+    )
+    
+    return chat_completion.choices[0].message.content
+
+# Back-compat: older imports expect this name
+def normalize_ocr_with_groq(ocr_text: str) -> str:
+    return normalize_prescription(ocr_text)
+
+def normalize_report(ocr_text):
+    """
+    Normalizes noisy OCR output using Groq LLaMA model.
+    Extracts doctor name, prescription date, and medicines.
+    
+    Args:
+        ocr_text: Raw OCR output
+        
+    Returns:
+        str: Cleaned prescription text
+    """
+    client = Groq(api_key=os.environ.get("GROQ_KEY"))
+    
+    prompt = f"""
+You are a medical report text normalizer. 
+Given the following raw OCR output from a lab report, extract and clean:
+
+1. Test names and results (format: TEST_NAME, RESULT, UNITS, REFERENCE_INTERVAL)
+2. Reference ranges (if applicable) for the tests
+3. Date of report (label it as 'Date: [date in YYYY-MM-DD format]')
+
+OCR:
+
+{ocr_text}
+
+Return ONLY the cleaned report data:
+
+Date: [date]
+
+[Test 1 Name]: [Result], [Units], [Reference Interval]
+[Test 2 Name]: [Result], [Units], [Reference Interval]
+...
+
+NO EXTRA TEXT, NOTES, OR EXPLANATIONS.
+"""
     
     chat_completion = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
@@ -183,7 +248,7 @@ def prescription_extraction(normalized_text):
         [medicine 2]
     
     Args:
-        normalized_text: Cleaned text from normalize_ocr_with_groq()
+        normalized_text: Cleaned text from normalize_prescription()
         
     Returns:
         dict: {doctor, date, medicines}
@@ -213,6 +278,73 @@ def prescription_extraction(normalized_text):
             medicines.append(med)
     
     return {"doctor": doctor, "date": date, "medicines": medicines}
+
+
+# =====================================================================
+# SECTION 3b: Report Data Extraction (Regex -> JSON)
+# =====================================================================
+
+def report_extraction(normalized_text: str):
+    """
+    Convert normalized lab report text into structured JSON using regex.
+
+    Expected input format (one item per line):
+        Date: <YYYY-MM-DD>
+
+        <TEST NAME>: <RESULT>, <UNITS>, <REFERENCE>
+
+    Returns dict:
+        {
+          "date": str|None,
+          "tests": [
+             {"name": str, "result": str, "units": str|None, "reference": str|None}
+          ]
+        }
+    """
+    lines = [l.strip() for l in (normalized_text or "").split("\n") if l.strip()]
+
+    date = None
+    tests: List[dict] = []
+
+    # Regexes for headers
+    rx_date = re.compile(r"^Date:\s*(.+)$", re.IGNORECASE)
+
+    # Regex for test lines: name before first colon; then CSV of result, units, reference (some may be empty)
+    # Example: "Creatinine: 1.00, mg/dL, 0.70 - 1.30"
+    rx_test = re.compile(r"^(?P<name>[^:]+):\s*(?P<body>.+)$")
+
+    for line in lines:
+        # Headers first
+        m = rx_date.match(line)
+        if m:
+            date = m.group(1).strip() or None
+            continue
+
+        # Tests
+        m = rx_test.match(line)
+        if not m:
+            continue
+        name = m.group("name").strip()
+        body = m.group("body").strip()
+
+        # Split by commas into up to 3 parts: result, units, reference
+        parts = [p.strip() for p in body.split(",")]
+        # Ensure length 3
+        if len(parts) < 3:
+            parts = parts + ["" for _ in range(3 - len(parts))]
+        result_val, units, reference = parts[0], parts[1], ",".join(parts[2:]).strip() if len(parts) > 2 else ""
+
+        tests.append({
+            "name": name,
+            "result": result_val,
+            "units": units or None,
+            "reference": reference or None,
+        })
+
+    return {
+        "date": date,
+        "tests": tests,
+    }
 
 # =====================================================================
 # SECTION 4: Flask Test Endpoint
@@ -248,17 +380,23 @@ if __name__ == "__main__":
         print("Raw OCR text:", raw_ocr)
         
         # Step 2: Groq normalization
-        try:
-            normalized = normalize_ocr_with_groq(raw_ocr)
-        except Exception as e:
-            print("Groq normalization failed:", e)
-            normalized = raw_ocr
-        print("Normalized OCR text:", normalized)
+        # try:
+        #     normalized = normalize_prescription(raw_ocr)
+        # except Exception as e:
+        #     print("Groq normalization failed:", e)
+        #     normalized = raw_ocr
+        # print("Normalized OCR text:", normalized)
         
-        # Step 3: Prescription extraction
-        prescription_data = prescription_extraction(normalized)
-        print("Extracted prescription data:", prescription_data)
+        # # Step 3: Prescription extraction
+        # prescription_data = prescription_extraction(normalized)
+        # print("Extracted prescription data:", prescription_data)
         
-        return jsonify(prescription_data)
+        # return jsonify(prescription_data)
+        # return jsonify({"raw_ocr": raw_ocr})
+        report = normalize_report(raw_ocr)
+        print("Normalized Report text:\n", report)
+        structured = report_extraction(report)
+        print("Structured Report:", structured)
+        return jsonify({"report": structured})
 
     app.run(debug=True)
