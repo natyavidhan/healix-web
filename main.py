@@ -1,3 +1,5 @@
+
+
 import os
 from datetime import timedelta
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
@@ -6,6 +8,7 @@ from flask_cors import CORS
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from ocr import extract_text_from_file, normalize_ocr_with_groq, prescription_extraction
 # Configuration
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/healix")
 SECRET_KEY = os.environ.get("SECRET_KEY", "secret")
@@ -381,6 +384,66 @@ def api_get_prescriptions():
 		p["_id"] = str(p["_id"])
 
 	return jsonify({"success": True, "prescriptions": user_prescriptions})
+
+
+# ---------------------- OCR UPLOAD/EXTRACTION API ----------------------
+@app.route("/api/prescriptions/ocr", methods=["POST"])
+@jwt_required()
+def api_extract_prescription_from_file():
+	"""
+	Upload a prescription file (PDF/Image), extract text via OCR, normalize it, and
+	return structured medical data: { doctor, date, medicines }.
+
+	Request:
+		Content-Type: multipart/form-data
+		Form field: file -> the uploaded file
+
+	Response (200):
+		{
+		  "success": true,
+		  "extracted": { "doctor": str|None, "date": str|None, "medicines": [ ... ] }
+		}
+	"""
+	# Validate authentication/user exists
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	# Validate file in request
+	if "file" not in request.files:
+		return jsonify({"success": False, "message": "No file part in request"}), 400
+
+	file = request.files["file"]
+	if not file or file.filename == "":
+		return jsonify({"success": False, "message": "No file selected"}), 400
+
+	# Optional: quick extension check (pdf/images). We keep permissive and let OCR handle specifics.
+	# allowed_ext = {"pdf", "png", "jpg", "jpeg"}
+	# ext = (file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else "")
+	# if ext not in allowed_ext:
+	#     return jsonify({"success": False, "message": "Unsupported file type"}), 400
+
+	try:
+		# Step 1: OCR extraction from the uploaded file
+		raw_ocr = extract_text_from_file(file, ocr_api_key=os.environ.get("OCR_KEY", "helloworld"))
+	except Exception as e:
+		return jsonify({"success": False, "message": f"OCR extraction failed: {str(e)}"}), 500
+
+	# Step 2: Normalize OCR using Groq (best-effort)
+	try:
+		normalized = normalize_ocr_with_groq(raw_ocr)
+	except Exception:
+		# Fallback: use raw OCR if Groq not configured/available
+		normalized = raw_ocr
+
+	# Step 3: Extract structured prescription data
+	try:
+		extracted = prescription_extraction(normalized)
+	except Exception as e:
+		return jsonify({"success": False, "message": f"Extraction failed: {str(e)}"}), 500
+
+	return jsonify({"success": True, "extracted": extracted}), 200
 
 if __name__ == "__main__":
 	# For development only. In production use a WSGI server.
