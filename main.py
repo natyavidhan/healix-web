@@ -15,6 +15,7 @@ from ocr import (
 	normalize_report,
 	report_extraction,
 )
+from rag_system import RAGService
 # Configuration
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/healix")
 SECRET_KEY = os.environ.get("SECRET_KEY", "secret")
@@ -39,6 +40,7 @@ users = db.users
 medications = db.medications
 prescriptions = db.prescriptions
 reports = db.reports
+rag = RAGService(db)
 
 
 def find_user_by_email(email: str):
@@ -618,6 +620,44 @@ def api_get_reports():
 		r["_id"] = str(r["_id"])
 
 	return jsonify({"success": True, "reports": user_reports}), 200
+
+
+# ---------------------- AI: RAG Ingest & Chat ----------------------
+@app.route("/api/ai/ingest", methods=["POST"])
+@jwt_required()
+def api_ai_ingest():
+	"""Build/rebuild the per-user vector index from Mongo data."""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+	try:
+		stats = rag.ingest_user(email)
+		return jsonify({"success": True, "stats": stats})
+	except Exception as e:
+		return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+@jwt_required()
+def api_ai_chat():
+	"""Query the user's personal RAG and synthesize an answer via Groq."""
+	email = get_jwt_identity()
+	user = find_user_by_email(email)
+	if not user:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	data = request.get_json() or {}
+	query = (data.get("query") or "").strip()
+	k = int(data.get("k") or 5)
+	if not query:
+		return jsonify({"success": False, "message": "Missing 'query'"}), 400
+
+	try:
+		result = rag.answer(email, query, k=k)
+		return jsonify({"success": True, **result})
+	except Exception as e:
+		return jsonify({"success": False, "message": str(e)}), 500
 
 if __name__ == "__main__":
 	# For development only. In production use a WSGI server.
