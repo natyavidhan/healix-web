@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "pip install doctor deps",
+			"type": "shell",
+			"command": "env\\Scripts\\python.exe -m pip install -r requirements.txt",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "quick flake check",
+			"type": "shell",
+			"command": "env\\Scripts\\python.exe -c \"import importlib;import sys;mods=['flask','flask_jwt_extended','flask_cors','pymongo','qrcode'];print('OK') if all(importlib.util.find_spec(m) for m in mods) else sys.exit(1)\"",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

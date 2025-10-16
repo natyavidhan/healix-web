@@ -3,10 +3,10 @@
 {% block title %}Dashboard — Healix{% endblock %}
 
 {% block content %}
-  <div class="card form-card mx-auto" style="max-width:720px">
-    <h1>Dashboard</h1>
-    <p class="lead">Welcome, {{ user.full_name or user.email }}</p>
-    <div>
+  <div class="form-card mx-auto" style="max-width:720px">
+    <h2 class="mb-1">Your dashboard</h2>
+    <p class="muted">Welcome, {{ user.full_name or user.email }}</p>
+    <div class="mt-2">
       <button id="logout" class="btn btn-outline-secondary">Log out</button>
     </div>
   </div>

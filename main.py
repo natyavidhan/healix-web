@@ -6,6 +6,10 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from flask_cors import CORS
 from pymongo import MongoClient
+from bson import ObjectId
+import base64
+import qrcode
+from io import BytesIO
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from ocr import (
@@ -41,12 +45,27 @@ medications = db.medications
 prescriptions = db.prescriptions
 reports = db.reports
 rag = RAGService(db)
+doctors = db.doctors
 
 
 def find_user_by_email(email: str):
 	if not email:
 		return None
 	return users.find_one({"email": email.lower()})
+
+
+def find_doctor_by_email(email: str):
+	if not email:
+		return None
+	return doctors.find_one({"email": email.lower()})
+
+
+def get_session_user():
+	return session.get("user")
+
+
+def get_session_doctor():
+	return session.get("doctor")
 
 
 @app.route("/")
@@ -70,6 +89,61 @@ def dashboard_page():
 	if not user:
 		return redirect(url_for("login_page"))
 	return render_template("dashboard.html", user=user)
+
+
+# ---------------------- DOCTOR PAGES ----------------------
+@app.route("/doctor/register")
+def doctor_register_page():
+	return render_template("doctor_register.html")
+
+
+@app.route("/doctor/login")
+def doctor_login_page():
+	return render_template("doctor_login.html")
+
+
+@app.route("/doctor/dashboard")
+def doctor_dashboard_page():
+	doctor_sess = get_session_doctor()
+	if not doctor_sess:
+		return redirect(url_for("doctor_login_page"))
+
+	doc = find_doctor_by_email(doctor_sess.get("email"))
+	if not doc:
+		session.pop("doctor", None)
+		return redirect(url_for("doctor_login_page"))
+
+	# Ensure doctor has a short code
+	if not doc.get("code"):
+		code = str(doc["_id"])[:8]
+		doctors.update_one({"_id": doc["_id"]}, {"$set": {"code": code}})
+		doc["code"] = code
+
+	# Build QR code PNG as base64
+	link_url = url_for("link_doctor_get", code=doc["code"], _external=True)
+	img = qrcode.make(link_url)
+	buf = BytesIO()
+	img.save(buf, format="PNG")
+	qr_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+	# Patient summaries
+	patient_docs = []
+	for pid in (doc.get("patients") or []):
+		try:
+			uid = ObjectId(pid) if isinstance(pid, str) else pid
+			u = users.find_one({"_id": uid})
+			if u:
+				patient_docs.append({
+					"_id": str(u["_id"]),
+					"full_name": u.get("full_name") or u.get("email"),
+					"email": u.get("email"),
+					"gender": u.get("gender"),
+					"dob": u.get("dob"),
+				})
+		except Exception:
+			continue
+
+	return render_template("doctor_dashboard.html", doctor=doc, qr_b64=qr_b64, link_url=link_url, patients=patient_docs)
 
 
 @app.route("/auth/google")
@@ -176,6 +250,59 @@ def api_login():
 @app.route("/api/logout", methods=["POST"])
 def api_logout():
 	session.pop("user", None)
+	return jsonify({"success": True})
+
+
+# ---------------------- DOCTOR AUTH APIs ----------------------
+@app.route("/api/doctor/register", methods=["POST"])
+def api_doctor_register():
+	data = request.get_json() or {}
+	full_name = (data.get("full_name") or "").strip()
+	email = (data.get("email") or "").strip().lower()
+	password = data.get("password") or ""
+	hospital = (data.get("hospital") or "").strip()
+	speciality = (data.get("speciality") or "").strip()
+
+	if not email or not password:
+		return jsonify({"success": False, "message": "Email and password required"}), 400
+
+	if find_doctor_by_email(email):
+		return jsonify({"success": False, "message": "Email already registered"}), 400
+
+	hashed = generate_password_hash(password)
+	doc = {
+		"full_name": full_name,
+		"email": email,
+		"password": hashed,
+		"hospital": hospital,
+		"speciality": speciality,
+		"patients": [],
+	}
+	res = doctors.insert_one(doc)
+	session["doctor"] = {"email": email, "full_name": full_name}
+	return jsonify({"success": True, "id": str(res.inserted_id)})
+
+
+@app.route("/api/doctor/login", methods=["POST"])
+def api_doctor_login():
+	data = request.get_json() or {}
+	email = (data.get("email") or "").strip().lower()
+	password = data.get("password") or ""
+
+	if not email or not password:
+		return jsonify({"success": False, "message": "Email and password required"}), 400
+
+	doc = find_doctor_by_email(email)
+	if not doc or not check_password_hash(doc.get("password"), password):
+		return jsonify({"success": False, "authenticated": False, "message": "Invalid credentials"})
+
+	session["doctor"] = {"email": doc.get("email"), "full_name": doc.get("full_name")}
+	return jsonify({"success": True, "authenticated": True})
+
+
+@app.route("/api/doctor/logout", methods=["POST"])
+def api_doctor_logout():
+	session.pop("doctor", None)
 	return jsonify({"success": True})
 
 
@@ -416,6 +543,34 @@ def api_delete_prescription(prescription_id):
 	return jsonify({"success": True, "message": "Prescription deleted"})
 
 
+# ---------------------- LINK FLOW (QR) ----------------------
+@app.route("/link/doctor/<code>", methods=["GET"])
+def link_doctor_get(code):
+	doc = doctors.find_one({"code": code})
+	if not doc:
+		return render_template("link_doctor.html", error="Invalid or expired link", code=code)
+	return render_template("link_doctor.html", doctor=doc, code=code)
+
+
+@app.route("/link/doctor/<code>", methods=["POST"])
+def link_doctor_post(code):
+	doc = doctors.find_one({"code": code})
+	if not doc:
+		return jsonify({"success": False, "message": "Invalid link"}), 400
+
+	patient = get_session_user()
+	if not patient:
+		return jsonify({"success": False, "requires_login": True, "login_url": url_for('login_page') + f"?next=/link/doctor/{code}"})
+
+	u = find_user_by_email(patient.get("email"))
+	if not u:
+		return jsonify({"success": False, "message": "User not found"}), 404
+
+	pid = str(u["_id"])
+	doctors.update_one({"_id": doc["_id"]}, {"$addToSet": {"patients": pid}})
+	return jsonify({"success": True, "message": "Linked with doctor"})
+
+
 # ---------------------- OCR UPLOAD/EXTRACTION API ----------------------
 @app.route("/api/prescriptions/ocr", methods=["POST"])
 @jwt_required()
@@ -620,6 +775,85 @@ def api_get_reports():
 		r["_id"] = str(r["_id"])
 
 	return jsonify({"success": True, "reports": user_reports}), 200
+
+
+# ---------------------- DOCTOR: Patient management ----------------------
+@app.route("/doctor/patients")
+def doctor_patients_list():
+	doctor_sess = get_session_doctor()
+	if not doctor_sess:
+		return redirect(url_for("doctor_login_page"))
+	doc = find_doctor_by_email(doctor_sess.get("email"))
+	if not doc:
+		session.pop("doctor", None)
+		return redirect(url_for("doctor_login_page"))
+
+	pdata = []
+	for pid in (doc.get("patients") or []):
+		try:
+			u = users.find_one({"_id": ObjectId(pid)})
+			if u:
+				pdata.append({
+					"_id": str(u["_id"]),
+					"full_name": u.get("full_name") or u.get("email"),
+					"email": u.get("email"),
+					"gender": u.get("gender"),
+					"dob": u.get("dob"),
+				})
+		except Exception:
+			continue
+	return render_template("doctor_dashboard.html", doctor=doc, patients=pdata)
+
+
+def _doctor_has_patient(doc, pid: str) -> bool:
+	return pid in [str(x) for x in (doc.get("patients") or [])]
+
+
+@app.route("/doctor/patients/<pid>")
+def doctor_patient_history(pid):
+	doctor_sess = get_session_doctor()
+	if not doctor_sess:
+		return redirect(url_for("doctor_login_page"))
+	doc = find_doctor_by_email(doctor_sess.get("email"))
+	if not doc:
+		session.pop("doctor", None)
+		return redirect(url_for("doctor_login_page"))
+
+	if not _doctor_has_patient(doc, pid):
+		return "Forbidden", 403
+
+	try:
+		user_obj = users.find_one({"_id": ObjectId(pid)})
+		if not user_obj:
+			return "User not found", 404
+	except Exception:
+		return "Invalid ID", 400
+
+	meds = list(medications.find({"user_id": pid}))
+	prescs = list(prescriptions.find({"user_id": pid}))
+	reps = list(reports.find({"user_id": pid}))
+	for x in meds:
+		x["_id"] = str(x["_id"])  # stringify ids
+	for x in prescs:
+		x["_id"] = str(x["_id"])  # stringify ids
+	for x in reps:
+		x["_id"] = str(x["_id"])  # stringify ids
+
+	return render_template(
+		"patient_history.html",
+		patient={
+			"_id": str(user_obj["_id"]),
+			"full_name": user_obj.get("full_name") or user_obj.get("email"),
+			"email": user_obj.get("email"),
+			"gender": user_obj.get("gender"),
+			"dob": user_obj.get("dob"),
+			"blood_group": user_obj.get("blood_group"),
+		},
+		medications=meds,
+		prescriptions=prescs,
+		reports=reps,
+		doctor=doc,
+	)
 
 
 # ---------------------- AI: RAG Ingest & Chat ----------------------

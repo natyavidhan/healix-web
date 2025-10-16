@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+
+{% block title %}Doctor Dashboard — Healix{% endblock %}
+
+{% block content %}
+  <div class="form-card mx-auto" style="max-width:980px">
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <h1>Doctor Dashboard</h1>
+        <p class="text-muted">Welcome, {{ doctor.full_name or doctor.email }}</p>
+      </div>
+      <form method="post" onsubmit="event.preventDefault(); doctorLogout();">
+        <button class="btn btn-outline-secondary">Log out</button>
+      </form>
+    </div>
+
+    <hr />
+    <div class="row">
+      <div class="col-md-6">
+  <h4>Your link</h4>
+        <p>Patients can scan this QR or open the link to connect with you.</p>
+        {% if link_url %}
+          <p><a href="{{ link_url }}" target="_blank">{{ link_url }}</a></p>
+        {% endif %}
+        {% if qr_b64 %}
+          <img alt="QR" src="data:image/png;base64,{{ qr_b64 }}" style="width:240px;height:240px;border:8px solid #eee;border-radius:12px" />
+        {% else %}
+          <p class="text-muted">QR not available</p>
+        {% endif %}
+      </div>
+      <div class="col-md-6">
+  <h4>Patients</h4>
+        {% if patients and patients|length > 0 %}
+          <ul class="list-group">
+            {% for p in patients %}
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                  <div class="fw-semibold">{{ p.full_name }}</div>
+                  <div class="small text-muted">{{ p.email }}</div>
+                </div>
+                <a class="btn btn-sm btn-primary" href="/doctor/patients/{{ p._id }}">View history</a>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted">No patients linked yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function doctorLogout(){
+      await fetch('/api/doctor/logout', { method: 'POST' });
+      location.href = '/doctor/login';
+    }
+  </script>
+{% endblock %}

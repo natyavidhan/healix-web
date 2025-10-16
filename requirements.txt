@@ -10,3 +10,5 @@ pymongo
 python-doctr
 faiss-cpu
 sentence-transformers
+qrcode
+Pillow

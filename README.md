@@ -7,6 +7,7 @@ Features:
 - Protected API endpoints
 - CORS enabled for React Native/mobile apps
 - Password hashing with Werkzeug
+- Doctor Portal (web-only): doctor accounts, QR-based patient linking, and patient history view
 
 Setup (Windows PowerShell):
 
@@ -44,6 +45,17 @@ API endpoints:
 - POST /api/refresh (requires refresh token in Authorization header) -> {access_token}
 - GET /api/user (requires access token) -> {user}
 - POST /api/logout
+
+Doctor Portal (web-only):
+- GET /doctor/register — Doctor signup page
+- GET /doctor/login — Doctor login page
+- GET /doctor/dashboard — Shows personal QR/link and patient list
+- GET /doctor/patients/<user_id> — View linked patient history
+- GET/POST /link/doctor/<code> — QR landing and link confirmation for patients
+
+Notes:
+- Patients must sign in on web at least once to accept a doctor's link. The mobile app can open the QR URL in a webview.
+- A doctor's QR encodes the link URL. When a patient confirms, their user ID is added to the doctor's patient list.
 
 React Native Integration:
 - Configure API_BASE_URL in `healix-app/lib/api.ts` to point to your Flask server

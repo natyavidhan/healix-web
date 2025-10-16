@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+
+{% block title %}Link with Doctor — Healix{% endblock %}
+
+{% block content %}
+  <div class="form-card mx-auto" style="max-width:640px">
+    {% if error %}
+      <h1>Link not valid</h1>
+      <p class="text-danger">{{ error }}</p>
+    {% else %}
+  <h2 class="mb-1">Link with Dr. {{ doctor.full_name or doctor.email }}</h2>
+  <p class="muted">Confirm to share your profile and allow the doctor to view your medical history in Healix.</p>
+      <div class="d-flex gap-3">
+        <button id="confirm" class="btn btn-primary">Confirm link</button>
+        <a class="btn btn-outline-secondary" href="/login?next=/link/doctor/{{ code }}">Sign in</a>
+      </div>
+      <p id="msg" class="mt-3"></p>
+    {% endif %}
+  </div>
+
+  <script>
+    const btn = document.getElementById('confirm');
+    const msg = document.getElementById('msg');
+    if(btn){
+      btn.addEventListener('click', async ()=>{
+        const res = await fetch(window.location.pathname, { method: 'POST' });
+        const j = await res.json();
+        if(j.requires_login){
+          window.location.href = j.login_url;
+        } else if(j.success){
+          msg.textContent = 'Linked successfully. You can close this tab.';
+        } else {
+          msg.textContent = j.message || 'Link failed';
+        }
+      });
+    }
+  </script>
+{% endblock %}
